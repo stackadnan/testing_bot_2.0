@@ -1,0 +1,5 @@
+ccxt
+python-dotenv
+websocket-client
+binance-asyncio
+requests
