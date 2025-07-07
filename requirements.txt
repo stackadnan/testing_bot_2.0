@@ -3,3 +3,4 @@ python-dotenv
 websocket-client
 binance-asyncio
 requests
+python-binance
