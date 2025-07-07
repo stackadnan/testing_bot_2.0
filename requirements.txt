@@ -1,6 +1,5 @@
 ccxt
 python-dotenv
-websocket-client
-binance-asyncio
-requests
 python-binance
+websocket-client
+requests
