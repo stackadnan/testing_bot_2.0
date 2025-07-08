@@ -501,7 +501,7 @@ if __name__ == "__main__":
     print("BINANCE_API_KEY (debug):", BINANCE_API_KEY)
     print("🔍 DEBUG: Environment variables loaded:")
     for k, v in os.environ.items():
-        if "BINANCE" in k or "BITGET" in k:
+        if "BINANCE_API_KEY" in k or "BITGET_API_KEY" in k:
             print(f"{k} = {v[:6]}...")
     try:
         while True:
