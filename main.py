@@ -36,7 +36,7 @@ install_and_import('python-dotenv', 'dotenv')
 install_and_import('websocket-client', 'websocket')
 
 # Load environment variables from .env file
-load_dotenv()
+# load_dotenv()
 
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
@@ -88,8 +88,8 @@ def save_processed_trade(trade_id):
     with open(PROCESSED_TRADES_FILE, "a") as f:
         f.write(f"{trade_id}\n")
 
-def place_bitget_order(symbol, side, quantity, price=None, max_usdt=None):
-    """Place a market order on Bitget to mirror Binance trade using ccxt. No cap on buy size if max_usdt is None."""
+def place_bitget_order(symbol, side, quantity, price=None):
+    """Place a market order on Bitget to mirror Binance trade using ccxt. Uses real Bitget balance for SELL orders."""
     try:
         bitget_symbol = SYMBOL_MAP.get(symbol)
         if not bitget_symbol:
@@ -103,25 +103,32 @@ def place_bitget_order(symbol, side, quantity, price=None, max_usdt=None):
                 ticker = bitget.fetch_ticker(bitget_symbol)
                 price = float(ticker['last'])
                 print(f"⚠️ No price provided for market BUY, using latest Bitget price: {price}")
-            cost = float(quantity) * float(price)
-            if max_usdt is not None:
-                cost = min(cost, max_usdt)
+            # Buy the same base amount as on Binance
+            amount = float(quantity)
             params["createMarketBuyOrderRequiresPrice"] = False
-            print(f"[Bitget Debug] Placing BUY order: symbol={bitget_symbol}, amount={cost}, params={params}")
+            print(f"[Bitget Debug] Placing BUY order: symbol={bitget_symbol}, amount={amount}, params={params}")
             order = bitget.create_order(
                 symbol=bitget_symbol,
                 type="market",
                 side=side,
-                amount=cost,  # cost in USDT
+                amount=amount,  # amount in base currency
                 params=params,
             )
         else:
-            print(f"[Bitget Debug] Placing SELL order: symbol={bitget_symbol}, amount={quantity}, params={params}")
+            # For sell, check Bitget balance and only sell up to available
+            base_coin = bitget_symbol.split("/")[0]
+            balance = bitget_spot.fetch_balance()
+            available = float(balance[base_coin]["free"]) if base_coin in balance and "free" in balance[base_coin] else 0.0
+            sell_amount = min(float(quantity), available)
+            if sell_amount <= 0:
+                print(f"🚫❌ Bitget SELL order failed: No {base_coin} available to sell.")
+                return False
+            print(f"[Bitget Debug] Placing SELL order: symbol={bitget_symbol}, amount={sell_amount}, params={params}")
             order = bitget.create_order(
                 symbol=bitget_symbol,
                 type="market",
                 side=side,
-                amount=quantity,
+                amount=sell_amount,  # amount in base currency
                 params=params,
             )
         print(f"✅ Successfully placed {side} order on Bitget for {quantity} {bitget_symbol} at market price")
@@ -198,7 +205,7 @@ def handle_pretty_message(msg, market_type="spot"):
                 logging.info(divider)
                 logging.info(f"🔄 Mirroring trade on Bitget...")
                 if market_type == "spot":
-                    result = place_bitget_order(symbol, side, quantity, price, max_usdt=5.0)
+                    result = place_bitget_order(symbol, side, quantity, price)
                 else:
                     logging.info(f"[Futures Mirror] Calling place_bitget_futures_order for {symbol}, {side}, {quantity}, {price}")
                     result = place_bitget_futures_order(symbol, side, quantity, price)
