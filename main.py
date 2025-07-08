@@ -77,6 +77,14 @@ bitget_futures = ccxt.bitget({
     "options": {"defaultType": "swap"},  # USDT-margined perpetual
 })
 
+# Build a mapping from Binance symbols (e.g., ETHUSDT) to Bitget futures symbols (e.g., ETH/USDT:USDT)
+BITGET_FUTURES_SYMBOL_MAP = {}
+for symbol in bitget_futures.load_markets():
+    if symbol.endswith(":USDT"):
+        base = symbol.split("/")[0]
+        binance_symbol = base + "USDT"
+        BITGET_FUTURES_SYMBOL_MAP[binance_symbol] = symbol
+
 PROCESSED_TRADES_FILE = "processed_trades_ccxt.txt"
 processed_trades = set()
 if os.path.exists(PROCESSED_TRADES_FILE):
@@ -158,10 +166,9 @@ def binance_to_bitget_futures_symbol(symbol):
 def place_bitget_futures_order(symbol, side, quantity, price=None, leverage=1):
     logging.info(f"[Futures Order] Attempting to place order: symbol={symbol}, side={side}, quantity={quantity}, price={price}, leverage={leverage}")
     try:
-        bitget_symbol = binance_to_bitget_futures_symbol(symbol)
-        markets = bitget_futures.load_markets()
-        if bitget_symbol not in markets:
-            logging.error(f"❌ No Bitget futures symbol mapping for {symbol} (tried {bitget_symbol}). Please check the list above and update your mapping if needed.")
+        bitget_symbol = BITGET_FUTURES_SYMBOL_MAP.get(symbol)
+        if not bitget_symbol:
+            logging.error(f"❌ No Bitget futures symbol mapping for {symbol}. Please check the list above and update your mapping if needed.")
             return False
         side = side.lower()
         params = {"leverage": leverage}
