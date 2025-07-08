@@ -146,22 +146,23 @@ def place_bitget_order(symbol, side, quantity, price=None):
                 print(f"[Bitget Error Response] {e.response.text}")
         return False
 
+def binance_to_bitget_futures_symbol(symbol):
+    """Convert Binance symbol (e.g., XLMUSDT) to Bitget futures symbol (e.g., XLM/USDT:USDT)"""
+    if "/" in symbol and ":USDT" in symbol:
+        return symbol  # Already in Bitget format
+    if symbol.endswith("USDT"):
+        base = symbol[:-4]
+        return f"{base}/USDT:USDT"
+    return symbol
+
 def place_bitget_futures_order(symbol, side, quantity, price=None, leverage=1):
     logging.info(f"[Futures Order] Attempting to place order: symbol={symbol}, side={side}, quantity={quantity}, price={price}, leverage={leverage}")
     try:
-        bitget_symbol = symbol.replace("_", "/") if "/" not in symbol else symbol
-        if bitget_symbol not in bitget_futures.load_markets():
-            if bitget_symbol.endswith("_PERP"):
-                alt_symbol = bitget_symbol.replace("_PERP", "/USD:USD")
-            elif bitget_symbol.endswith("USD_PERP"):
-                alt_symbol = bitget_symbol.replace("USD_PERP", "USD/USD")
-            else:
-                alt_symbol = bitget_symbol
-            if alt_symbol in bitget_futures.load_markets():
-                bitget_symbol = alt_symbol
-            else:
-                logging.error(f"❌ No Bitget futures symbol mapping for {symbol}. Please check the list above and update your mapping if needed.")
-                return False
+        bitget_symbol = binance_to_bitget_futures_symbol(symbol)
+        markets = bitget_futures.load_markets()
+        if bitget_symbol not in markets:
+            logging.error(f"❌ No Bitget futures symbol mapping for {symbol} (tried {bitget_symbol}). Please check the list above and update your mapping if needed.")
+            return False
         side = side.lower()
         params = {"leverage": leverage}
         logging.info(f"[Bitget Futures Debug] Placing {side.upper()} order: symbol={bitget_symbol}, amount={quantity}, params={params}")
