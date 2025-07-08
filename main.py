@@ -12,7 +12,6 @@ import subprocess
 from dotenv import load_dotenv
 import ccxt
 import websocket
-from binance import AsyncClient, BinanceSocketManager
 import asyncio
 
 # Workaround for asyncio/aiodns compatibility on Windows
@@ -34,7 +33,7 @@ def install_and_import(package, import_name=None):
 # Ensure required packages are installed
 install_and_import('ccxt')
 install_and_import('python-dotenv', 'dotenv')
-install_and_import('binance')
+install_and_import('websocket-client', 'websocket')
 
 # Load environment variables from .env file
 load_dotenv()
@@ -228,6 +227,17 @@ def get_listen_key(api_key, base_url):
         print(f"Error getting listenKey: {response.status_code} {response.text}")
         return None
 
+def get_listen_key_spot(api_key, base_url):
+    """Get listen key for spot trading"""
+    url = f"{base_url}/api/v3/userDataStream"
+    headers = {"X-MBX-APIKEY": api_key}
+    response = requests.post(url, headers=headers)
+    if response.status_code == 200:
+        return response.json()["listenKey"]
+    else:
+        print(f"Error getting spot listenKey: {response.status_code} {response.text}")
+        return None
+
 def keepalive_listen_key(api_key, listen_key, base_url):
     url = f"{base_url}/fapi/v1/listenKey" if 'fapi' in base_url else f"{base_url}/dapi/v1/listenKey"
     headers = {"X-MBX-APIKEY": api_key}
@@ -237,6 +247,17 @@ def keepalive_listen_key(api_key, listen_key, base_url):
         except Exception as e:
             print(f"Error keeping listenKey alive: {e}")
         time.sleep(30 * 60)
+
+def keepalive_listen_key_spot(api_key, listen_key, base_url):
+    """Keep spot listen key alive"""
+    url = f"{base_url}/api/v3/userDataStream"
+    headers = {"X-MBX-APIKEY": api_key}
+    while True:
+        try:
+            requests.put(url, headers=headers, params={"listenKey": listen_key})
+        except Exception as e:
+            print(f"Error keeping spot listenKey alive: {e}")
+        time.sleep(30 * 60)  # Every 30 minutes
 
 def on_futures_message(ws, message, label):
     data = json.loads(message)
@@ -319,26 +340,71 @@ def start_binance_futures_ws():
     start_futures_ws(listen_key, ws_url, label="USDT-M")
 
 # Async Binance WebSocket monitor for spot (re-added)
-async def binance_spot_websocket_monitor():
+def start_binance_spot_ws():
+    """Standard WebSocket implementation for Binance spot trading"""
+    base_url = "https://api.binance.com"
+    ws_base = "wss://stream.binance.com:9443/ws/"
+    
+    # Get listen key for spot trading
+    listen_key = get_listen_key_spot(BINANCE_API_KEY, base_url)
+    if not listen_key:
+        print("[Spot WS] Could not get listenKey, aborting spot monitor.")
+        return
+    
+    ws_url = ws_base + listen_key
+    print(f"[Spot WS] Connecting to {ws_url}")
+    
+    # Start keepalive thread
+    def keepalive():
+        keepalive_listen_key_spot(BINANCE_API_KEY, listen_key, base_url)
+    threading.Thread(target=keepalive, daemon=True).start()
+    
+    # Start WebSocket connection
+    start_spot_ws(listen_key, ws_url, label="SPOT")
+
+def start_spot_ws(listen_key, ws_url, label):
+    """Start spot WebSocket connection with reconnection logic"""
+    def _on_message(ws, message):
+        on_spot_message(ws, message, label)
+    def _on_error(ws, error):
+        on_spot_error(ws, error, label)
+    def _on_close(ws, close_status_code, close_msg):
+        on_spot_close(ws, close_status_code, close_msg, label)
+    def _on_open(ws):
+        on_spot_open(ws, label)
+    
+    backoff = 2
+    max_backoff = 60
     while True:
+        ws = websocket.WebSocketApp(ws_url,
+                                    on_message=_on_message,
+                                    on_error=_on_error,
+                                    on_close=_on_close,
+                                    on_open=_on_open)
         try:
-            client = await AsyncClient.create(BINANCE_API_KEY, BINANCE_API_SECRET, testnet=False)
-            bsm = BinanceSocketManager(client)
-            socket = bsm.user_socket()
-            print("🚀 Listening for SPOT user updates on Binance...\n")
-            async with socket as stream:
-                while True:
-                    try:
-                        msg = await stream.recv()
-                        handle_pretty_message(msg, market_type="spot")
-                    except Exception as e:
-                        print("❌ Error receiving SPOT message:", e)
-                        break
-            await client.close_connection()
+            ws.run_forever()
         except Exception as e:
-            print("❌ WebSocket connection error (spot):", e)
-        print("🔄 Reconnecting to Binance SPOT user socket in 5 seconds...")
-        await asyncio.sleep(5)
+            print(f"[{label}] WebSocket run_forever() error: {e}")
+        print(f"[{label}] WebSocket disconnected. Reconnecting in {backoff} seconds...")
+        time.sleep(backoff)
+        backoff = min(backoff * 2, max_backoff)
+
+def on_spot_message(ws, message, label):
+    """Handle spot WebSocket messages"""
+    try:
+        data = json.loads(message)
+        handle_pretty_message(data, market_type="spot")
+    except Exception as e:
+        print(f"[{label}] Error processing message: {e}")
+
+def on_spot_error(ws, error, label):
+    print(f"[{label}] WebSocket error: {error}")
+
+def on_spot_close(ws, close_status_code, close_msg, label):
+    print(f"[{label}] WebSocket closed: {close_status_code} {close_msg}")
+
+def on_spot_open(ws, label):
+    print(f"[{label}] WebSocket connection opened. Listening for real-time {label} trade/account events...")
 
 def on_all_futures_message(ws, message, label):
     data = json.loads(message)
@@ -416,7 +482,8 @@ if __name__ == "__main__":
     if 'TRADING_MODE' not in globals():
         TRADING_MODE = os.getenv("TRADING_MODE", "both").lower()
     if TRADING_MODE in ("spot", "both"):
-        t_spot = threading.Thread(target=lambda: asyncio.run(binance_spot_websocket_monitor()), daemon=True)
+        # Use standard WebSocket instead of async
+        t_spot = threading.Thread(target=start_binance_spot_ws, daemon=True)
         t_spot.start()
         threads.append(t_spot)
     if TRADING_MODE in ("futures", "both"):
