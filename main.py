@@ -491,6 +491,7 @@ if __name__ == "__main__":
         t_futures.start()
         threads.append(t_futures)
     print("[Main] Binance to Bitget CopyTrading Bot is running. Press Ctrl+C to exit.")
+    print("BINANCE_API_KEY (debug):", BINANCE_API_KEY)
     try:
         while True:
             time.sleep(1)
