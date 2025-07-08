@@ -36,7 +36,7 @@ install_and_import('python-dotenv', 'dotenv')
 install_and_import('websocket-client', 'websocket')
 
 # Load environment variables from .env file
-# load_dotenv()
+load_dotenv()
 
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
