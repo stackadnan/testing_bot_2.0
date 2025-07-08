@@ -499,6 +499,10 @@ if __name__ == "__main__":
         threads.append(t_futures)
     print("[Main] Binance to Bitget CopyTrading Bot is running. Press Ctrl+C to exit.")
     print("BINANCE_API_KEY (debug):", BINANCE_API_KEY)
+    print("🔍 DEBUG: Environment variables loaded:")
+    for k, v in os.environ.items():
+        if "BINANCE" in k or "BITGET" in k:
+            print(f"{k} = {v[:6]}...")
     try:
         while True:
             time.sleep(1)
