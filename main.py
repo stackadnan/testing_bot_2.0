@@ -1,39 +1,10 @@
-# main.py - Cleaned and deduplicated
-import os
-import sys
-import time
-import json
-import logging
-import traceback
-import threading
-import requests
-import importlib
-import subprocess
+import os,sys,time,json,logging,traceback,threading,requests,importlib,subprocess,ccxt,websocket,asyncio
 from dotenv import load_dotenv
-import ccxt
-import websocket
-import asyncio
 
 # Workaround for asyncio/aiodns compatibility on Windows
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-# Install and import required packages
-def install_and_import(package, import_name=None):
-    try:
-        if import_name is None:
-            import_name = package
-        importlib.import_module(import_name)
-    except ImportError:
-        print(f"[Setup] Installing missing package: {package}")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-        importlib.invalidate_caches()
-        importlib.import_module(import_name)
-
-# Ensure required packages are installed
-install_and_import('ccxt')
-install_and_import('python-dotenv', 'dotenv')
-install_and_import('websocket-client', 'websocket')
 
 # Load environment variables from .env file
 load_dotenv()
@@ -77,16 +48,16 @@ bitget_futures = ccxt.bitget({
     "options": {"defaultType": "swap"},  # USDT-margined perpetual
 })
 
-# Build a mapping from Binance symbols (e.g., ETHUSDT) to Bitget futures symbols (e.g., ETH/USDT:USDT)
+# Build a mapping from Binance symbols (e.g., ETH/USDT:USDT) to Bitget futures symbols (e.g., ETH/USDT:USDT)
 BITGET_FUTURES_SYMBOL_MAP = {}
 for symbol in bitget_futures.load_markets():
     if symbol.endswith(":USDT"):
-        base = symbol.split("/")[0]
-        binance_symbol = base + "USDT"
-        BITGET_FUTURES_SYMBOL_MAP[binance_symbol] = symbol
+        # Key is Bitget format (e.g., DOGE/USDT:USDT), value is Bitget format (e.g., DOGE/USDT:USDT)
+        BITGET_FUTURES_SYMBOL_MAP[symbol] = symbol
 
 PROCESSED_TRADES_FILE = "processed_trades_ccxt.txt"
 processed_trades = set()
+
 if os.path.exists(PROCESSED_TRADES_FILE):
     with open(PROCESSED_TRADES_FILE, "r") as f:
         processed_trades = set(line.strip() for line in f if line.strip())
@@ -166,17 +137,31 @@ def binance_to_bitget_futures_symbol(symbol):
 def place_bitget_futures_order(symbol, side, quantity, price=None, leverage=1):
     logging.info(f"[Futures Order] Attempting to place order: symbol={symbol}, side={side}, quantity={quantity}, price={price}, leverage={leverage}")
     try:
-        bitget_symbol = BITGET_FUTURES_SYMBOL_MAP.get(symbol)
+        # Always convert to Bitget format for lookup
+        bitget_key = binance_to_bitget_futures_symbol(symbol)
+        bitget_symbol = BITGET_FUTURES_SYMBOL_MAP.get(bitget_key)
         if not bitget_symbol:
             logging.error(f"❌ No Bitget futures symbol mapping for {symbol}. Please check the list above and update your mapping if needed.")
             return False
         side = side.lower()
-        params = {"leverage": leverage}
+        # Bitget hedge mode: use only 'open' or 'close' for tradeSide, do not send posSide
+        # For now, always open positions (mirror open trades)
+        if side == "buy":
+            trade_side = "open"  # use "close" if closing a long
+            bitget_order_side = "buy"
+        elif side == "sell":
+            trade_side = "open"  # use "close" if closing a short
+            bitget_order_side = "sell"
+        else:
+            trade_side = "open"
+            bitget_order_side = side  # fallback, but should not happen
+        # TODO: Detect if the trade is closing and set trade_side to "close" as needed
+        params = {"leverage": leverage, "tradeSide": trade_side}
         logging.info(f"[Bitget Futures Debug] Placing {side.upper()} order: symbol={bitget_symbol}, amount={quantity}, params={params}")
         order = bitget_futures.create_order(
             symbol=bitget_symbol,
             type="market",
-            side=side,
+            side=bitget_order_side,  # use 'buy' or 'sell' as required by Bitget
             amount=quantity,
             params=params,
         )
@@ -431,6 +416,8 @@ def on_all_futures_message(ws, message, label):
         price = float(o['L'])
         trade_id = str(o['t'])
         total = quantity * price
+        # Extract leverage from Binance order event if available, else default to 1
+        leverage = int(o.get('le', 1)) if 'le' in o else 1
         if o['X'] == 'FILLED':
             divider = "🟢" + "=" * 30 + "🟢"
             side_icon = "🟩 BUY" if side.upper() == "BUY" else "🟥 SELL"
@@ -443,7 +430,7 @@ def on_all_futures_message(ws, message, label):
             logging.info(divider)
             logging.info(f"🔄 Mirroring trade on Bitget...")
             if label == "USDT-M":
-                result = place_bitget_futures_order(symbol, side, quantity, price)
+                result = place_bitget_futures_order(symbol, side, quantity, price, leverage)
                 if result:
                     logging.info(f"✅ Mirrored on Bitget [{label}]")
                 else:
@@ -497,7 +484,6 @@ if __name__ == "__main__":
     if 'TRADING_MODE' not in globals():
         TRADING_MODE = os.getenv("TRADING_MODE", "both").lower()
     if TRADING_MODE in ("spot", "both"):
-        # Use standard WebSocket instead of async
         t_spot = threading.Thread(target=start_binance_spot_ws, daemon=True)
         t_spot.start()
         threads.append(t_spot)
@@ -507,7 +493,6 @@ if __name__ == "__main__":
         threads.append(t_futures)
     print("[Main] Binance to Bitget CopyTrading Bot is running. Press Ctrl+C to exit.")
     print("BINANCE_API_KEY (debug):", BINANCE_API_KEY)
-    print("🔍 DEBUG: Environment variables loaded:")
     for k, v in os.environ.items():
         if "BINANCE_API_KEY" in k or "BITGET_API_KEY" in k:
             print(f"{k} = {v[:6]}...")
