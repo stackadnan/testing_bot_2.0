@@ -4,6 +4,21 @@ from rich.table import Table
 from rich.panel import Panel
 from rich import box
 
+# from dotenv import load_dotenv
+# import os
+# load_dotenv()
+
+# BITGET_API_KEY = os.getenv("BITGET_API_KEY")
+# BITGET_API_SECRET = os.getenv("BITGET_API_SECRET")
+# BITGET_PASSPHRASE = os.getenv("BITGET_PASSPHRASE")
+
+# bitget = ccxt.bitget({
+#     "apiKey": BITGET_API_KEY,
+#     "secret": BITGET_API_SECRET,
+#     "password": BITGET_PASSPHRASE,
+#     "enableRateLimit": True,
+#     'options': {'defaultType': 'swap'},
+# })
 
 def place_bitget_order(bitget, symbol, order_type, side, amount, price=None, leverage=20, margin_mode='isolated', trade_side=None):
     """
@@ -110,5 +125,5 @@ def format_bitget_order_output(order):
 #     price=None,  # or a float for limit orders
 #     leverage=3,
 #     margin_mode='isolated',
-#     trade_side='close' # 'open' for opening positions, 'close' for closing positions
+#     trade_side='open' # 'open' for opening positions, 'close' for closing positions
 # )

@@ -117,10 +117,19 @@ async def user_data_ws():
                     # Example: Place a market order on Bitget for the same symbol
                     binance_symbol = o["s"]
                     bitget_symbol = convert_binance_to_bitget_symbol(binance_symbol)
-                    side = "sell" if o["ps"] == "SHORT" else "buy"
-                    direction = "open" if o["S"] == "BUY" else "close"
+                    # side = "sell" if o["ps"] == "SHORT" else "buy"
+                    # direction = "open" if o["S"] == "BUY" else "close"
+                    if o["ps"] == "LONG":
+                        side = "sell" if o["ps"] == "SHORT" else "buy"
+                        direction = "open" if o["S"] == "BUY" else "close"
+                    elif o["ps"] == "SHORT":
+                        side = "sell" if o["ps"] == "SHORT" else "buy"
+                        direction = "open" if o["S"] == "SELL" else "close"
+
+                    
                     leverage_, margin_type_ = get_position_info(o['s'], o['ps'])
                     leverage = leverage_.replace('x', '') if isinstance(leverage_, str) else leverage_
+                    print(f"Placing Bitget order for {bitget_symbol} with side {side}, amount {o['q']}, leverage {leverage}, margin type {margin_type_}, direction {direction}")
 
                     place_bitget_order(
                         bitget=bitget,
@@ -131,7 +140,7 @@ async def user_data_ws():
                         price=None,             #done
                         leverage=int(leverage), # Pass as int
                         margin_mode=margin_type_, #done
-                        trade_side=direction    
+                        trade_side=direction 
                     )
 
 #########################################################################################
