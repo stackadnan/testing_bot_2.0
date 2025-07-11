@@ -3,3 +3,5 @@ ccxt
 python-dotenv
 websocket-client
 requests
+rich
+asyncio

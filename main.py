@@ -1,10 +1,14 @@
-import os,sys,time,json,logging,traceback,threading,requests,importlib,subprocess,ccxt,websocket,asyncio
+import os,sys,time,json,logging,traceback,threading,requests,ccxt,websocket,asyncio
 from dotenv import load_dotenv
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich import box
+from future_copier import user_data_ws
 
 # Workaround for asyncio/aiodns compatibility on Windows
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
 
 # Load environment variables from .env file
 load_dotenv()
@@ -27,12 +31,15 @@ bitget = ccxt.bitget({
     "apiKey": BITGET_API_KEY,
     "secret": BITGET_API_SECRET,
     "password": BITGET_PASSPHRASE,
+    'sandboxMode': os.getenv("USE_DEMO", "0") == "1",
     "enableRateLimit": True,
 })
 bitget_markets = bitget.load_markets()
+
+bitget.set_sandbox_mode(os.getenv("USE_DEMO", "0") == "1")
 SYMBOL_MAP = {symbol.replace('/', ''): symbol for symbol in bitget_markets if symbol.endswith('/USDT')}
 
-# Bitget spot and futures clients
+# Bitget spot client
 bitget_spot = ccxt.bitget({
     "apiKey": BITGET_API_KEY,
     "secret": BITGET_API_SECRET,
@@ -40,20 +47,6 @@ bitget_spot = ccxt.bitget({
     "enableRateLimit": True,
     "options": {"defaultType": "spot"},
 })
-bitget_futures = ccxt.bitget({
-    "apiKey": BITGET_API_KEY,
-    "secret": BITGET_API_SECRET,
-    "password": BITGET_PASSPHRASE,
-    "enableRateLimit": True,
-    "options": {"defaultType": "swap"},  # USDT-margined perpetual
-})
-
-# Build a mapping from Binance symbols (e.g., ETH/USDT:USDT) to Bitget futures symbols (e.g., ETH/USDT:USDT)
-BITGET_FUTURES_SYMBOL_MAP = {}
-for symbol in bitget_futures.load_markets():
-    if symbol.endswith(":USDT"):
-        # Key is Bitget format (e.g., DOGE/USDT:USDT), value is Bitget format (e.g., DOGE/USDT:USDT)
-        BITGET_FUTURES_SYMBOL_MAP[symbol] = symbol
 
 PROCESSED_TRADES_FILE = "processed_trades_ccxt.txt"
 processed_trades = set()
@@ -125,57 +118,9 @@ def place_bitget_order(symbol, side, quantity, price=None):
                 print(f"[Bitget Error Response] {e.response.text}")
         return False
 
-def binance_to_bitget_futures_symbol(symbol):
-    """Convert Binance symbol (e.g., XLMUSDT) to Bitget futures symbol (e.g., XLM/USDT:USDT)"""
-    if "/" in symbol and ":USDT" in symbol:
-        return symbol  # Already in Bitget format
-    if symbol.endswith("USDT"):
-        base = symbol[:-4]
-        return f"{base}/USDT:USDT"
-    return symbol
-
-def place_bitget_futures_order(symbol, side, quantity, price=None, leverage=1):
-    logging.info(f"[Futures Order] Attempting to place order: symbol={symbol}, side={side}, quantity={quantity}, price={price}, leverage={leverage}")
-    try:
-        # Always convert to Bitget format for lookup
-        bitget_key = binance_to_bitget_futures_symbol(symbol)
-        bitget_symbol = BITGET_FUTURES_SYMBOL_MAP.get(bitget_key)
-        if not bitget_symbol:
-            logging.error(f"❌ No Bitget futures symbol mapping for {symbol}. Please check the list above and update your mapping if needed.")
-            return False
-        side = side.lower()
-        # Bitget hedge mode: use only 'open' or 'close' for tradeSide, do not send posSide
-        # For now, always open positions (mirror open trades)
-        if side == "buy":
-            trade_side = "open"  # use "close" if closing a long
-            bitget_order_side = "buy"
-        elif side == "sell":
-            trade_side = "open"  # use "close" if closing a short
-            bitget_order_side = "sell"
-        else:
-            trade_side = "open"
-            bitget_order_side = side  # fallback, but should not happen
-        # TODO: Detect if the trade is closing and set trade_side to "close" as needed
-        params = {"leverage": leverage, "tradeSide": trade_side}
-        logging.info(f"[Bitget Futures Debug] Placing {side.upper()} order: symbol={bitget_symbol}, amount={quantity}, params={params}")
-        order = bitget_futures.create_order(
-            symbol=bitget_symbol,
-            type="market",
-            side=bitget_order_side,  # use 'buy' or 'sell' as required by Bitget
-            amount=quantity,
-            params=params,
-        )
-        logging.info(f"✅ Successfully placed {side} order on Bitget FUTURES for {quantity} {bitget_symbol} at market price")
-        return True
-    except Exception as e:
-        logging.error(f"❌ Bitget futures order error: {e}")
-        logging.error(traceback.format_exc())
-        if hasattr(e, 'response') and hasattr(e.response, 'text'):
-            logging.error(f"[Bitget Futures Error Response] {e.response.text}")
-        return False
-
 def handle_pretty_message(msg, market_type="spot"):
     event_type = msg.get("e")
+    console = Console()
     if event_type == "executionReport":
         status = msg.get("X")
         execution_type = msg.get("x")
@@ -187,45 +132,35 @@ def handle_pretty_message(msg, market_type="spot"):
         if status == "FILLED" and execution_type == "TRADE":
             if trade_id not in processed_trades:
                 save_processed_trade(trade_id)
-                divider = "🟢" + "=" * 30 + "🟢"
-                side_icon = "🟩 BUY" if side.upper() == "BUY" else "🟥 SELL"
-                market_icon = "💱 SPOT" if market_type == "spot" else "📈 FUTURES"
-                logging.info(f"\n{divider}\n{side_icon} {market_icon}")
-                logging.info(f"🔹 Symbol   : {symbol}")
-                logging.info(f"🔹 Quantity : {quantity}")
-                logging.info(f"🔹 Price    : {price:,.4f} USDT")
-                logging.info(f"🔹 Total    : {float(quantity) * float(price):,.2f} USDT")
-                logging.info(divider)
+                # Build rich table for pretty output
+                table = Table(show_header=False, box=box.SQUARE, expand=False)
+                table.add_row("[cyan]Symbol", f"[white]{symbol}")
+                table.add_row("[cyan]Side", f"[white]{side}")
+                table.add_row("[cyan]Quantity", f"[white]{quantity}")
+                table.add_row("[cyan]Price", f"[white]{price:,.4f} USDT")
+                table.add_row("[cyan]Total Value", f"[white]{float(quantity) * float(price):,.2f} USDT")
+                table.add_row("[cyan]Trade ID", f"[white]{trade_id}")
+                table.add_row("[cyan]Order Status", f"[white]{status}")
+                panel = Panel(table, title=f"[bold]{side} [blue]{symbol} [green]SPOT[/green]", border_style="green", expand=False)
+                console.print(panel)
                 logging.info(f"🔄 Mirroring trade on Bitget...")
-                if market_type == "spot":
-                    result = place_bitget_order(symbol, side, quantity, price)
-                else:
-                    logging.info(f"[Futures Mirror] Calling place_bitget_futures_order for {symbol}, {side}, {quantity}, {price}")
-                    result = place_bitget_futures_order(symbol, side, quantity, price)
+                result = place_bitget_order(symbol, side, quantity, price)
                 if result:
-                    logging.info(f"✅ Mirrored on Bitget [{market_type.upper()}]")
+                    logging.info(f"✅ Mirrored on Bitget [SPOT]")
                 else:
-                    logging.error(f"❌ Mirror failed on Bitget [{market_type.upper()}]")
-                logging.info(divider)
+                    logging.error(f"❌ Mirror failed on Bitget [SPOT]")
     elif event_type == "outboundAccountPosition":
         balances = msg.get("B", [])
-        divider = "💼" + "-" * 30 + "💼"
-        logging.info(f"\n{divider}\n[ACCOUNT UPDATE - {market_type.upper()}]")
+        table = Table(show_header=True, box=box.SQUARE, expand=False)
+        table.add_column("Asset")
+        table.add_column("Available")
         for asset in balances:
             available = float(asset['f'])
             if available > 0:
-                logging.info(f"  💰 {asset['a']}: {available}")
-        logging.info(divider)
-
-def get_listen_key(api_key, base_url):
-    url = f"{base_url}/fapi/v1/listenKey" if 'fapi' in base_url else f"{base_url}/dapi/v1/listenKey"
-    headers = {"X-MBX-APIKEY": api_key}
-    response = requests.post(url, headers=headers)
-    if response.status_code == 200:
-        return response.json()["listenKey"]
-    else:
-        print(f"Error getting listenKey: {response.status_code} {response.text}")
-        return None
+                table.add_row(asset['a'], f"{available}")
+        if table.row_count > 0:
+            panel = Panel(table, title="[bold]Account Update - SPOT[/bold]", border_style="blue", expand=False)
+            console.print(panel)
 
 def get_listen_key_spot(api_key, base_url):
     """Get listen key for spot trading"""
@@ -238,16 +173,6 @@ def get_listen_key_spot(api_key, base_url):
         print(f"Error getting spot listenKey: {response.status_code} {response.text}")
         return None
 
-def keepalive_listen_key(api_key, listen_key, base_url):
-    url = f"{base_url}/fapi/v1/listenKey" if 'fapi' in base_url else f"{base_url}/dapi/v1/listenKey"
-    headers = {"X-MBX-APIKEY": api_key}
-    while True:
-        try:
-            requests.put(url, headers=headers, params={"listenKey": listen_key})
-        except Exception as e:
-            print(f"Error keeping listenKey alive: {e}")
-        time.sleep(30 * 60)
-
 def keepalive_listen_key_spot(api_key, listen_key, base_url):
     """Keep spot listen key alive"""
     url = f"{base_url}/api/v3/userDataStream"
@@ -259,87 +184,6 @@ def keepalive_listen_key_spot(api_key, listen_key, base_url):
             print(f"Error keeping spot listenKey alive: {e}")
         time.sleep(30 * 60)  # Every 30 minutes
 
-def on_futures_message(ws, message, label):
-    data = json.loads(message)
-    if data.get('e') == 'ORDER_TRADE_UPDATE':
-        o = data['o']
-        if o['X'] == 'FILLED':
-            symbol = o['s']
-            side = o['S']
-            quantity = float(o['l'])
-            price = float(o['L'])
-            trade_id = str(o['t'])
-            total = quantity * price
-            if trade_id not in processed_trades:
-                save_processed_trade(trade_id)
-                pretty = f"\n✅ {side} order FILLED for {symbol} [{label}]\n" \
-                        f"📦 Quantity: {quantity}\n" \
-                        f"💰 Price per unit: {price:,.4f} USDT\n" \
-                        f"💸 Total spent: {total:,.2f} USDT\n" \
-                        f"🔄 Attempting to mirror trade on Bitget..."
-                logging.info(pretty)
-                result = place_bitget_futures_order(symbol, side, quantity, price)
-                if result:
-                    logging.info(f"✅ Mirrored trade on Bitget successfully [{label}]")
-                else:
-                    logging.error(f"❌ Failed to mirror trade on Bitget [{label}]")
-                logging.info("-" * 50)
-    elif data.get('e') == 'ACCOUNT_UPDATE':
-        logging.info(f"[{label}] ACCOUNT UPDATE: {data}")
-    else:
-        logging.info(f"[{label}] Other event: {data}")
-
-def on_futures_error(ws, error, label):
-    print(f"[{label}] WebSocket error: {error}")
-
-def on_futures_close(ws, close_status_code, close_msg, label):
-    print(f"[{label}] WebSocket closed: {close_status_code} {close_msg}")
-
-def on_futures_open(ws, label):
-    print(f"[{label}] WebSocket connection opened. Listening for real-time {label} trade/account events...")
-
-def start_futures_ws(listen_key, ws_url, label):
-    def _on_message(ws, message):
-        on_futures_message(ws, message, label)
-    def _on_error(ws, error):
-        on_futures_error(ws, error, label)
-    def _on_close(ws, close_status_code, close_msg):
-        on_futures_close(ws, close_status_code, close_msg, label)
-    def _on_open(ws):
-        on_futures_open(ws, label)
-    backoff = 2
-    max_backoff = 60
-    while True:
-        ws = websocket.WebSocketApp(ws_url,
-                                    on_message=_on_message,
-                                    on_error=_on_error,
-                                    on_close=_on_close,
-                                    on_open=_on_open)
-        try:
-            ws.run_forever()
-        except Exception as e:
-            print(f"[{label}] WebSocket run_forever() error: {e}")
-        print(f"[{label}] WebSocket disconnected. Reconnecting in {backoff} seconds...")
-        time.sleep(backoff)
-        backoff = min(backoff * 2, max_backoff)
-
-# --- Restore old Binance USDT-margined futures WebSocket logic ---
-
-def start_binance_futures_ws():
-    base_url = "https://fapi.binance.com"
-    ws_base = "wss://fstream.binance.com/ws/"
-    listen_key = get_listen_key(BINANCE_API_KEY, base_url)
-    if not listen_key:
-        print("[Futures WS] Could not get listenKey, aborting futures monitor.")
-        return
-    ws_url = ws_base + listen_key
-    print(f"[Futures WS] Connecting to {ws_url}")
-    def keepalive():
-        keepalive_listen_key(BINANCE_API_KEY, listen_key, base_url)
-    threading.Thread(target=keepalive, daemon=True).start()
-    start_futures_ws(listen_key, ws_url, label="USDT-M")
-
-# Async Binance WebSocket monitor for spot (re-added)
 def start_binance_spot_ws():
     """Standard WebSocket implementation for Binance spot trading"""
     base_url = "https://api.binance.com"
@@ -367,11 +211,11 @@ def start_spot_ws(listen_key, ws_url, label):
     def _on_message(ws, message):
         on_spot_message(ws, message, label)
     def _on_error(ws, error):
-        on_spot_error(ws, error, label)
+        print(f"[{label}] WebSocket error: {error}")
     def _on_close(ws, close_status_code, close_msg):
-        on_spot_close(ws, close_status_code, close_msg, label)
+        print(f"[{label}] WebSocket closed: {close_status_code} {close_msg}")
     def _on_open(ws):
-        on_spot_open(ws, label)
+        print(f"[{label}] WebSocket connection opened. Listening for real-time {label} trade/account events...")
     
     backoff = 2
     max_backoff = 60
@@ -397,105 +241,12 @@ def on_spot_message(ws, message, label):
     except Exception as e:
         print(f"[{label}] Error processing message: {e}")
 
-def on_spot_error(ws, error, label):
-    print(f"[{label}] WebSocket error: {error}")
-
-def on_spot_close(ws, close_status_code, close_msg, label):
-    print(f"[{label}] WebSocket closed: {close_status_code} {close_msg}")
-
-def on_spot_open(ws, label):
-    print(f"[{label}] WebSocket connection opened. Listening for real-time {label} trade/account events...")
-
-def on_all_futures_message(ws, message, label):
-    data = json.loads(message)
-    if data.get('e') == 'ORDER_TRADE_UPDATE':
-        o = data['o']
-        symbol = o['s']
-        side = o['S']
-        quantity = float(o['l'])
-        price = float(o['L'])
-        trade_id = str(o['t'])
-        total = quantity * price
-        # Extract leverage from Binance order event if available, else default to 1
-        leverage = int(o.get('le', 1)) if 'le' in o else 1
-        if o['X'] == 'FILLED':
-            divider = "🟢" + "=" * 30 + "🟢"
-            side_icon = "🟩 BUY" if side.upper() == "BUY" else "🟥 SELL"
-            market_icon = f"📈 {label}"
-            logging.info(f"\n{divider}\n{side_icon} {market_icon}")
-            logging.info(f"🔹 Symbol   : {symbol}")
-            logging.info(f"🔹 Quantity : {quantity}")
-            logging.info(f"🔹 Price    : {price:,.4f} USDT")
-            logging.info(f"🔹 Total    : {total:,.2f} USDT")
-            logging.info(divider)
-            logging.info(f"🔄 Mirroring trade on Bitget...")
-            if label == "USDT-M":
-                result = place_bitget_futures_order(symbol, side, quantity, price, leverage)
-                if result:
-                    logging.info(f"✅ Mirrored on Bitget [{label}]")
-                else:
-                    logging.error(f"❌ Mirror failed on Bitget [{label}]")
-            else:
-                logging.info(f"⚠️ [COIN-M] Skipped Bitget mirror (not supported)")
-            logging.info(divider)
-    elif data.get('e') == 'ACCOUNT_UPDATE':
-        divider = "💼" + "-" * 30 + "💼"
-        logging.info(f"\n{divider}\n[ACCOUNT UPDATE - {label}]")
-        acc = data.get('a', {})
-        for asset in acc.get('B', []):
-            available = float(asset.get('wb', 0))
-            if available > 0:
-                logging.info(f"  💰 {asset['a']}: {available}")
-        for pos in acc.get('P', []):
-            if float(pos.get('pa', 0)) != 0:
-                logging.info(f"  📊 Position: {pos}")
-        logging.info(divider)
-    else:
-        logging.info(f"[{label}] Other event: {data}")
-
-def start_all_futures_ws():
-    BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
-    # COIN-M (delivery) futures
-    coinm_base_url = "https://dapi.binance.com"
-    coinm_ws_base = "wss://dstream.binance.com/ws/"
-    coinm_listen_key = get_listen_key(BINANCE_API_KEY, coinm_base_url)
-    if coinm_listen_key:
-        threading.Thread(target=keepalive_listen_key, args=(BINANCE_API_KEY, coinm_listen_key, coinm_base_url), daemon=True).start()
-        def coinm_ws():
-            start_futures_ws(coinm_listen_key, coinm_ws_base + coinm_listen_key, "COIN-M")
-        threading.Thread(target=coinm_ws, daemon=True).start()
-    # USDT-margined futures
-    usdtm_base_url = "https://fapi.binance.com"
-    usdtm_ws_base = "wss://fstream.binance.com/ws/"
-    usdtm_listen_key = get_listen_key(BINANCE_API_KEY, usdtm_base_url)
-    if usdtm_listen_key:
-        threading.Thread(target=keepalive_listen_key, args=(BINANCE_API_KEY, usdtm_listen_key, usdtm_base_url), daemon=True).start()
-        def usdtm_ws():
-            start_futures_ws(usdtm_listen_key, usdtm_ws_base + usdtm_listen_key, "USDT-M")
-        threading.Thread(target=usdtm_ws, daemon=True).start()
-
-# Patch start_futures_ws to use the new handler
-import types
-start_futures_ws.__globals__['on_futures_message'] = on_all_futures_message
-
-# --- Main entry point (CLEANED) ---
+# --- Main entry point (SPOT ONLY) ---
 if __name__ == "__main__":
-    threads = []
-    if 'TRADING_MODE' not in globals():
-        TRADING_MODE = os.getenv("TRADING_MODE", "both").lower()
-    if TRADING_MODE in ("spot", "both"):
-        t_spot = threading.Thread(target=start_binance_spot_ws, daemon=True)
-        t_spot.start()
-        threads.append(t_spot)
-    if TRADING_MODE in ("futures", "both"):
-        t_futures = threading.Thread(target=start_all_futures_ws, daemon=True)
-        t_futures.start()
-        threads.append(t_futures)
-    print("[Main] Binance to Bitget CopyTrading Bot is running. Press Ctrl+C to exit.")
-    print("BINANCE_API_KEY (debug):", BINANCE_API_KEY)
-    for k, v in os.environ.items():
-        if "BINANCE_API_KEY" in k or "BITGET_API_KEY" in k:
-            print(f"{k} = {v[:6]}...")
+    print("[Main] Binance to Bitget CopyTrading Bot (SPOT and FUTURE) is running. Press Ctrl+C to exit.")
+    t_spot = threading.Thread(target=start_binance_spot_ws, daemon=True)
+    t_spot.start()
+    asyncio.run(user_data_ws())
     try:
         while True:
             time.sleep(1)
