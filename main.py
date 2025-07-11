@@ -243,7 +243,7 @@ def on_spot_message(ws, message, label):
 
 # --- Main entry point (SPOT ONLY) ---
 if __name__ == "__main__":
-    print("[Main] Binance to Bitget CopyTrading Bot (SPOT and FUTURE) is running. Press Ctrl+C to exit.")
+    print("[Main] Binance to Bitget CopyTrading New Bot (SPOT and FUTURE) is running. Press Ctrl+C to exit.")
     t_spot = threading.Thread(target=start_binance_spot_ws, daemon=True)
     t_spot.start()
     asyncio.run(user_data_ws())
