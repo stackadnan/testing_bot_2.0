@@ -291,6 +291,7 @@ if __name__ == "__main__":
     # ctypes.windll.kernel32.SetThreadExecutionState(0x80000002)
     t_spot = threading.Thread(target=start_binance_spot_ws, daemon=True)
     t_spot.start()
+    print(["Debug:"],BINANCE_API_KEY, BITGET_API_KEY, BITGET_API_SECRET, BITGET_PASSPHRASE)
     try:
         import future_copier
         asyncio.run(future_copier.user_data_ws(shutdown_event))
