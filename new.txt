@@ -1,8 +1,0 @@
-For LONG:
-Placing Bitget order for XRP/USDT:USDT with side buy, amount 2, leverage 2, margin type cross, direction open
-Placing Bitget order for XRP/USDT:USDT with side buy, amount 2, leverage 2, margin type cross, direction close
-
-
-For SHORT:
-Placing Bitget order for XRP/USDT:USDT with side sell, amount 2.1, leverage 2, margin type cross, direction close
-Placing Bitget order for XRP/USDT:USDT with side sell, amount 2.1, leverage 2, margin type cross, direction open

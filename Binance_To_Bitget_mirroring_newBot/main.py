@@ -288,7 +288,7 @@ def on_spot_message(ws, message, label):
 # --- Main entry point (SPOT ONLY) ---
 if __name__ == "__main__":
     print("[Main] Binance to Bitget CopyTrading New Bot (SPOT and FUTURE) is running. Press Ctrl+C to exit.")
-    # ctypes.windll.kernel32.SetThreadExecutionState(0x80000002)
+    ctypes.windll.kernel32.SetThreadExecutionState(0x80000002)
     t_spot = threading.Thread(target=start_binance_spot_ws, daemon=True)
     t_spot.start()
     try:
